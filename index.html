@@ -1,0 +1,153 @@
+<!--
+ * @Author: your name
+ * @Date: 2022-03-09 15:35:25
+ * @LastEditTime: 2022-03-10 10:39:28
+ * @LastEditors: Please set LastEditors
+ * @Description: 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+ * @FilePath: /flv/dist/index.html
+-->
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Document</title>
+  <script src="./wasm_exec.js"></script>
+  <script src="./webcodecs.js"></script>
+  <style>
+    #container {
+      width: 700px;
+      height: 400px;
+    }
+  </style>
+</head>
+
+<body>
+  <canvas id="container" autoplay></canvas>
+</body>
+<script>
+  const media = document.getElementById('container');
+  media.width = 700;
+  media.height = 400;
+  const ctx = media.getContext('2d');
+  initDecoder((frame) => {
+    ctx.drawImage(frame, 0, 0);
+    frame.close();
+  });
+
+  let sps, pps;
+  let splitCode = new Uint8Array([0, 0, 0, 1]);
+
+  // polyfill
+  if (!WebAssembly.instantiateStreaming) {
+    WebAssembly.instantiateStreaming = async (resp, importObject) => {
+      const source = await (await resp).arrayBuffer()
+      return await WebAssembly.instantiate(source, importObject)
+    }
+  }
+
+  function loadWasm(path) {
+    const go = new Go()
+    return new Promise((resolve, reject) => {
+      WebAssembly.instantiateStreaming(fetch(path), go.importObject)
+        .then(result => {
+          go.run(result.instance)
+          resolve(result.instance)
+        })
+        .catch(error => {
+          reject(error)
+        })
+    })
+  }
+
+  loadWasm('./flv.wasm').then((wasm) => {
+    console.log("main.wasm is loaded 👋")
+    parserFlv()
+  })
+
+  function requestFlv() {
+    return fetch('./test.flv').then((response) => {
+      return response.blob();
+    })
+  }
+
+  let load_result;
+
+  function parserFlv() {
+    requestFlv().then((res) => {
+      res.arrayBuffer().then((buffer) => {
+        let data = new Uint8Array(buffer);
+        const flv_header = data.subarray(0, 9);
+        console.log('flv_header', flv_header)
+
+        load_result = loadFlvDemuxer(data.subarray(0, 13));
+        console.log('load_result', load_result)
+        data = data.subarray(13);
+
+        while (data.length) {
+          const tag_head = data.subarray(0, 11);
+          // console.log('tag_head_type', tag_head[0]);
+          const size = tag_head[1] << 16 | tag_head[2] << 8 | tag_head[3];
+          const tag = data.subarray(0, 11 + size);
+          handleTag(tag);
+          data = data.subarray(11 + size);
+
+          let previous_tag_size = data.subarray(0, 4);
+          data = data.subarray(4);
+        }
+
+        console.log('result_flv_length', data.length);
+      });
+    });
+  }
+  let flag = false;
+  // https://www.jianshu.com/p/e1e417eee2e7
+  function handleTag(tag) {
+    if (load_result) {
+      const res = readTag(tag);
+      if (res && res.header && res.header.tagType === 'Video' && res.body && res.body.trait === "SequenceHeader") {
+        console.log(res);
+        console.log('avc:', res.body.Raw);
+        console.log('sps数目：', res.body.Raw[5] & 0x1f);
+        console.log('sps长度：', res.body.Raw[6] << 8 | res.body.Raw[7]);
+        const size = res.body.Raw[6] << 8 | res.body.Raw[7];
+        console.log('sps：', res.body.Raw.subarray(8, size + 8));
+        sps = concatUint8(splitCode, res.body.Raw.subarray(8, size + 8));
+        const ppsIndex = size + 8;
+        console.log('pps数目', res.body.Raw[ppsIndex]);
+        console.log('pps长度', res.body.Raw[ppsIndex + 1] << 8 | res.body.Raw[ppsIndex + 2]);
+        const ppssize = res.body.Raw[ppsIndex + 1] << 8 | res.body.Raw[ppsIndex + 2];
+        console.log('pps：', res.body.Raw.subarray(ppsIndex + 3, ppsIndex + 3 + ppssize));
+        pps = concatUint8(splitCode, res.body.Raw.subarray(ppsIndex + 3, ppsIndex + 3 + ppssize));
+      } else {
+        if (res && res.body && res.body.trait !== 'NALU') {
+          return
+        }
+        if (res && res.header && res.header.tagType === 'Video') {
+          if (res.body && res.body.frameType === "Keyframe") {
+            console.log(res)
+            console.log('key');
+            const frame = concatUint8(sps, pps, splitCode, res.body.Raw.subarray(4));
+            inputChunk(frame, res.header.timestamp, true)
+          } else {
+            console.log('nokey');
+            const frame = concatUint8(splitCode, res.body.Raw.subarray(4));
+            inputChunk(frame, res.header.timestamp, false)
+          }
+        }
+      }
+    }
+  }
+
+  function sliceBuffer(data, num) {
+    num = num ? num : 1;
+    const result = data.subarray(0, num);
+    data = data.subarray(num);
+    return result;
+  }
+
+</script>
+
+</html>
