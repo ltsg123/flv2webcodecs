@@ -32,9 +32,34 @@
   media.width = 700;
   media.height = 400;
   const ctx = media.getContext('2d');
+
+  // 每一帧间隔33ms, 示例中的duration
+  const interval = 33;
+  // 延时播帧
+  async function delay() {
+    return new Promise(resolve => {
+      setTimeout(resolve, interval);
+    })
+  }
+
+  let isDraw = false;
+  let drawCache = [];
+  async function drawToCanvas() {
+    if (isDraw || drawCache.length === 0) {
+      return;
+    }
+    isDraw = true;
+    await delay();
+    const curFrame = drawCache.shift();
+    ctx.drawImage(curFrame, 0, 0);
+    curFrame.close();
+    isDraw = false;
+    drawToCanvas();
+  }
+
   initDecoder((frame) => {
-    ctx.drawImage(frame, 0, 0);
-    frame.close();
+    drawCache.push(frame);
+    drawToCanvas();
   });
 
   let sps, pps;
